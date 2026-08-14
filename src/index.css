@@ -1,0 +1,117 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --font-headline: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    --font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    
+    --color-primary: #003178;
+    --color-secondary: #006b5f;
+    --color-dry-path: #43A047;
+    --color-rain-alert: #FF7043;
+    --color-shelter-blue: #E3F2FD;
+    --color-background: #faf8ff;
+  }
+
+  body {
+    font-family: var(--font-body);
+    background-color: var(--color-background);
+    color: #1a1b21;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-headline);
+  }
+}
+
+/* Glassmorphism panel */
+.glass-panel {
+  background-color: rgba(255, 255, 255, 0.88);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+.glass-card {
+  background: rgba(255, 255, 255, 0.82);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.6);
+}
+
+.weather-strip-dry {
+  border-left: 4px solid #43A047;
+}
+
+.weather-strip-balanced {
+  border-left: 4px solid #006b5f;
+}
+
+.weather-strip-rain {
+  border-left: 4px solid #FF7043;
+}
+
+.active-card-shadow {
+  box-shadow: 0 8px 24px rgba(0, 49, 120, 0.12);
+}
+
+/* Custom Leaflet Map styling */
+.leaflet-container {
+  font-family: var(--font-body);
+  width: 100%;
+  height: 100%;
+  background: #e8ecf4 !important;
+}
+
+.leaflet-popup-content-wrapper {
+  border-radius: 12px !important;
+  box-shadow: 0 10px 25px rgba(0, 49, 120, 0.15) !important;
+  padding: 4px !important;
+}
+
+.custom-pulse-marker {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+
+.custom-pulse-marker::after {
+  content: '';
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  animation: pulse-ring 1.8s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
+}
+
+@keyframes pulse-ring {
+  0% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(0, 49, 120, 0.5);
+  }
+  70% {
+    transform: scale(1.6);
+    box-shadow: 0 0 0 10px rgba(0, 49, 120, 0);
+  }
+  100% {
+    transform: scale(1.9);
+    box-shadow: 0 0 0 0 rgba(0, 49, 120, 0);
+  }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.03);
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 49, 120, 0.2);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 49, 120, 0.4);
+}

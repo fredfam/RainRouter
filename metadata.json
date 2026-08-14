@@ -1,0 +1,6 @@
+{
+  "name": "RainRouter - Smart Sheltered Routing",
+  "description": "Comfort-first walking and real-time sheltered route planner for Singapore, integrating live Data.gov.sg weather, NEA rain radar, and OneMap routing.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
