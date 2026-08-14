@@ -1,5 +1,5 @@
 import { LocationPreset, RouteOption, RouteSegment, RouteType, OneMapSearchResult, OneMapRouteResponse } from '../types';
-import { SINGAPORE_LANDMARKS } from '../data/singaporeData';
+import { SINGAPORE_LANDMARKS, generateRoutes } from '../data/singaporeData';
 
 const ONEMAP_AUTH_URL = 'https://www.onemap.gov.sg/api/auth/post/getToken';
 const ONEMAP_SEARCH_URL = 'https://www.onemap.gov.sg/api/common/elastic/search';
@@ -12,10 +12,11 @@ const EXPIRY_KEY = 'onemap_token_expiry';
 
 /**
  * Mint or retrieve a valid OneMap API Token.
+ * Calls backend /api/onemap/token first, falls back to direct API.
  * Tokens generated last up to 3 days (approx 72 hours).
  */
 export async function getOneMapToken(customEmail?: string, customPassword?: string): Promise<string | null> {
-  // Check static/pre-set token from environment variables (e.g., Vercel `OneMapAPI`)
+  // Check static/pre-set token from environment variables (e.g., `OneMapAPI`)
   const envToken =
     (typeof process !== 'undefined' ? process.env?.OneMapAPI : undefined) ||
     (import.meta as any).env?.OneMapAPI ||
@@ -28,7 +29,7 @@ export async function getOneMapToken(customEmail?: string, customPassword?: stri
     return envToken.trim();
   }
 
-  // Check localStorage second
+  // Check localStorage
   try {
     const cachedToken = localStorage.getItem(TOKEN_KEY);
     const cachedExpiry = localStorage.getItem(EXPIRY_KEY);
@@ -45,7 +46,32 @@ export async function getOneMapToken(customEmail?: string, customPassword?: stri
     console.warn('LocalStorage error reading OneMap token:', e);
   }
 
-  // If credentials are provided or available in environment
+  // Try backend proxy token minting
+  try {
+    const res = await fetch('/api/onemap/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: customEmail, password: customPassword })
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.access_token) {
+        try {
+          localStorage.setItem(TOKEN_KEY, data.access_token);
+          if (data.expiry_timestamp) {
+            localStorage.setItem(EXPIRY_KEY, data.expiry_timestamp);
+          }
+        } catch (err) {
+          console.warn('Failed to cache OneMap token:', err);
+        }
+        return data.access_token;
+      }
+    }
+  } catch (err) {
+    // Backend fetch failed, try direct OneMap API if email/password available
+  }
+
+  // If credentials are provided directly
   const email = customEmail || (typeof process !== 'undefined' ? process.env?.ONEMAP_EMAIL : undefined) || (import.meta as any).env?.VITE_ONEMAP_EMAIL;
   const password = customPassword || (typeof process !== 'undefined' ? process.env?.ONEMAP_PASSWORD : undefined) || (import.meta as any).env?.VITE_ONEMAP_PASSWORD;
 
@@ -65,7 +91,6 @@ export async function getOneMapToken(customEmail?: string, customPassword?: stri
             if (data.expiry_timestamp) {
               localStorage.setItem(EXPIRY_KEY, data.expiry_timestamp);
             } else {
-              // 3 days default
               const threeDaysLater = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString();
               localStorage.setItem(EXPIRY_KEY, threeDaysLater);
             }
@@ -76,11 +101,11 @@ export async function getOneMapToken(customEmail?: string, customPassword?: stri
         }
       }
     } catch (err) {
-      console.warn('Failed to mint token via OneMap API:', err);
+      console.warn('Failed to mint token via direct OneMap API:', err);
     }
   }
 
-  // Return cached token anyway if available, even if expired as fallback
+  // Return cached token anyway if available
   try {
     return localStorage.getItem(TOKEN_KEY);
   } catch {
@@ -103,11 +128,31 @@ export function setManualOneMapToken(token: string, expiresInDays = 3) {
 
 /**
  * Search & Geocode Singapore locations using OneMap Elastic Search API.
- * Endpoint: https://www.onemap.gov.sg/api/common/elastic/search?searchVal={query}&returnGeom=Y&getAddrDetails=Y&pageNum=1
+ * Endpoint: /api/onemap/search -> https://www.onemap.gov.sg/api/common/elastic/search?searchVal={query}&returnGeom=Y&getAddrDetails=Y&pageNum=1
  */
 export async function searchOneMap(searchVal: string): Promise<LocationPreset[]> {
   if (!searchVal || searchVal.trim().length < 2) return [];
 
+  // 1. Try Backend Proxy endpoint first
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 3500);
+
+    const proxyUrl = `/api/onemap/search?searchVal=${encodeURIComponent(searchVal.trim())}&returnGeom=Y&getAddrDetails=Y&pageNum=1`;
+    const res = await fetch(proxyUrl, { signal: controller.signal });
+    clearTimeout(timeoutId);
+
+    if (res.ok) {
+      const data = await res.json();
+      if (data && Array.isArray(data.results) && data.results.length > 0) {
+        return parseOneSearchResults(data.results);
+      }
+    }
+  } catch (err) {
+    // Proceed to direct or fallback
+  }
+
+  // 2. Direct OneMap Elastic Search fallback
   try {
     const token = await getOneMapToken();
     const headers: Record<string, string> = {
@@ -120,7 +165,7 @@ export async function searchOneMap(searchVal: string): Promise<LocationPreset[]>
 
     const url = `${ONEMAP_SEARCH_URL}?searchVal=${encodeURIComponent(searchVal.trim())}&returnGeom=Y&getAddrDetails=Y&pageNum=1`;
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 4000);
+    const timeoutId = setTimeout(() => controller.abort(), 3000);
 
     const res = await fetch(url, {
       method: 'GET',
@@ -129,42 +174,17 @@ export async function searchOneMap(searchVal: string): Promise<LocationPreset[]>
     });
     clearTimeout(timeoutId);
 
-    if (!res.ok) throw new Error(`OneMap Search status: ${res.status}`);
-    const data = await res.json();
-
-    if (data && Array.isArray(data.results) && data.results.length > 0) {
-      return data.results.map((r: OneMapSearchResult, idx: number) => {
-        const lat = parseFloat(r.LATITUDE);
-        const lng = parseFloat(r.LONGITUDE);
-        const name = r.BUILDING && r.BUILDING !== 'NIL' ? r.BUILDING : r.SEARCHVAL || r.ADDRESS;
-        
-        let category: LocationPreset['category'] = 'address';
-        const nameLower = name.toLowerCase();
-        if (nameLower.includes('mrt') || nameLower.includes('station') || nameLower.includes('interchange')) {
-          category = 'mrt';
-        } else if (nameLower.includes('mall') || nameLower.includes('square') || nameLower.includes('plaza') || nameLower.includes('centre') || nameLower.includes('center')) {
-          category = 'mall';
-        } else if (nameLower.includes('park') || nameLower.includes('gardens') || nameLower.includes('tower') || nameLower.includes('sands')) {
-          category = 'landmark';
-        }
-
-        return {
-          id: `om_${idx}_${lat.toFixed(4)}_${lng.toFixed(4)}`,
-          name,
-          category,
-          lat,
-          lng,
-          description: r.ADDRESS !== 'NIL' ? r.ADDRESS : `${r.ROAD_NAME || ''} ${r.POSTAL ? 'S(' + r.POSTAL + ')' : ''}`.trim(),
-          postalCode: r.POSTAL !== 'NIL' ? r.POSTAL : undefined,
-          address: r.ADDRESS !== 'NIL' ? r.ADDRESS : undefined
-        };
-      });
+    if (res.ok) {
+      const data = await res.json();
+      if (data && Array.isArray(data.results) && data.results.length > 0) {
+        return parseOneSearchResults(data.results);
+      }
     }
   } catch (err) {
     console.warn('OneMap live search failed, falling back to local landmarks:', err);
   }
 
-  // Local fallback search filter
+  // 3. Local fallback search filter
   const q = searchVal.toLowerCase();
   return SINGAPORE_LANDMARKS.filter(l =>
     l.name.toLowerCase().includes(q) ||
@@ -172,11 +192,60 @@ export async function searchOneMap(searchVal: string): Promise<LocationPreset[]>
   );
 }
 
+function parseOneSearchResults(results: OneMapSearchResult[]): LocationPreset[] {
+  return results.map((r: OneMapSearchResult, idx: number) => {
+    const lat = parseFloat(r.LATITUDE);
+    const lng = parseFloat(r.LONGITUDE);
+    const name = r.BUILDING && r.BUILDING !== 'NIL' ? r.BUILDING : r.SEARCHVAL || r.ADDRESS;
+
+    let category: LocationPreset['category'] = 'address';
+    const nameLower = name.toLowerCase();
+    if (nameLower.includes('mrt') || nameLower.includes('station') || nameLower.includes('interchange')) {
+      category = 'mrt';
+    } else if (nameLower.includes('mall') || nameLower.includes('square') || nameLower.includes('plaza') || nameLower.includes('centre') || nameLower.includes('center')) {
+      category = 'mall';
+    } else if (nameLower.includes('park') || nameLower.includes('gardens') || nameLower.includes('tower') || nameLower.includes('sands')) {
+      category = 'landmark';
+    }
+
+    return {
+      id: `om_${idx}_${lat.toFixed(4)}_${lng.toFixed(4)}`,
+      name,
+      category,
+      lat,
+      lng,
+      description: r.ADDRESS !== 'NIL' ? r.ADDRESS : `${r.ROAD_NAME || ''} ${r.POSTAL ? 'S(' + r.POSTAL + ')' : ''}`.trim(),
+      postalCode: r.POSTAL !== 'NIL' ? r.POSTAL : undefined,
+      address: r.ADDRESS !== 'NIL' ? r.ADDRESS : undefined
+    };
+  });
+}
+
 /**
  * Reverse geocode a latitude/longitude point to obtain street/building name.
- * Endpoint: https://www.onemap.gov.sg/api/public/revgeocode?location={lat,lng}&buffer=40&addressType=All
+ * Endpoint: /api/onemap/revgeocode -> https://www.onemap.gov.sg/api/public/revgeocode?location={lat,lng}&buffer=40&addressType=All
  */
 export async function reverseGeocodeOneMap(lat: number, lng: number, buffer = 40): Promise<LocationPreset | null> {
+  // 1. Try Backend Proxy
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 3500);
+
+    const proxyUrl = `/api/onemap/revgeocode?location=${lat.toFixed(6)},${lng.toFixed(6)}&buffer=${buffer}&addressType=All`;
+    const res = await fetch(proxyUrl, { signal: controller.signal });
+    clearTimeout(timeoutId);
+
+    if (res.ok) {
+      const data = await res.json();
+      if (data?.GeocodeInfo && data.GeocodeInfo.length > 0) {
+        return formatGeocodeInfo(data.GeocodeInfo[0], lat, lng);
+      }
+    }
+  } catch (err) {
+    // Proceed to direct
+  }
+
+  // 2. Direct OneMap API
   try {
     const token = await getOneMapToken();
     const headers: Record<string, string> = { 'Accept': 'application/json' };
@@ -186,7 +255,7 @@ export async function reverseGeocodeOneMap(lat: number, lng: number, buffer = 40
 
     const url = `${ONEMAP_REV_GEOCODE_URL}?location=${lat.toFixed(6)},${lng.toFixed(6)}&buffer=${buffer}&addressType=All`;
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 4000);
+    const timeoutId = setTimeout(() => controller.abort(), 3000);
 
     const res = await fetch(url, { headers, signal: controller.signal });
     clearTimeout(timeoutId);
@@ -194,22 +263,7 @@ export async function reverseGeocodeOneMap(lat: number, lng: number, buffer = 40
     if (res.ok) {
       const data = await res.json();
       if (data && data.GeocodeInfo && data.GeocodeInfo.length > 0) {
-        const info = data.GeocodeInfo[0];
-        const name = info.BUILDINGNAME && info.BUILDINGNAME !== 'NIL'
-          ? info.BUILDINGNAME
-          : info.ROAD && info.ROAD !== 'NIL'
-          ? `${info.BLOCK && info.BLOCK !== 'NIL' ? 'Blk ' + info.BLOCK + ' ' : ''}${info.ROAD}`
-          : `Point (${lat.toFixed(4)}, ${lng.toFixed(4)})`;
-
-        return {
-          id: `rev_${lat.toFixed(4)}_${lng.toFixed(4)}`,
-          name,
-          category: 'landmark',
-          lat,
-          lng,
-          description: info.POSTALCODE && info.POSTALCODE !== 'NIL' ? `Singapore ${info.POSTALCODE}` : `${lat.toFixed(4)}, ${lng.toFixed(4)}`,
-          postalCode: info.POSTALCODE !== 'NIL' ? info.POSTALCODE : undefined
-        };
+        return formatGeocodeInfo(data.GeocodeInfo[0], lat, lng);
       }
     }
   } catch (err) {
@@ -223,6 +277,24 @@ export async function reverseGeocodeOneMap(lat: number, lng: number, buffer = 40
     lat,
     lng,
     description: 'Singapore'
+  };
+}
+
+function formatGeocodeInfo(info: any, lat: number, lng: number): LocationPreset {
+  const name = info.BUILDINGNAME && info.BUILDINGNAME !== 'NIL'
+    ? info.BUILDINGNAME
+    : info.ROAD && info.ROAD !== 'NIL'
+    ? `${info.BLOCK && info.BLOCK !== 'NIL' ? 'Blk ' + info.BLOCK + ' ' : ''}${info.ROAD}`
+    : `Point (${lat.toFixed(4)}, ${lng.toFixed(4)})`;
+
+  return {
+    id: `rev_${lat.toFixed(4)}_${lng.toFixed(4)}`,
+    name,
+    category: 'landmark',
+    lat,
+    lng,
+    description: info.POSTALCODE && info.POSTALCODE !== 'NIL' ? `Singapore ${info.POSTALCODE}` : `${lat.toFixed(4)}, ${lng.toFixed(4)}`,
+    postalCode: info.POSTALCODE !== 'NIL' ? info.POSTALCODE : undefined
   };
 }
 
@@ -276,7 +348,7 @@ export function decodePolyline(encoded: string): [number, number][] {
 
 /**
  * Fetch route computation from OneMap Routing Service
- * Endpoint: https://www.onemap.gov.sg/api/public/routingsvc/route?start={start_lat,start_lng}&end={end_lat,end_lng}&routeType=walk
+ * Endpoint: /api/onemap/route -> https://www.onemap.gov.sg/api/public/routingsvc/route?start={start_lat,start_lng}&end={end_lat,end_lng}&routeType={walk|drive|cycle|pt}
  */
 export async function fetchOneMapRouting(
   startLat: number,
@@ -285,6 +357,27 @@ export async function fetchOneMapRouting(
   endLng: number,
   routeType: RouteType = 'walk'
 ): Promise<OneMapRouteResponse | null> {
+  const startStr = `${startLat.toFixed(6)},${startLng.toFixed(6)}`;
+  const endStr = `${endLat.toFixed(6)},${endLng.toFixed(6)}`;
+
+  // 1. Try backend proxy
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 3500);
+
+    const proxyUrl = `/api/onemap/route?start=${startStr}&end=${endStr}&routeType=${routeType}`;
+    const res = await fetch(proxyUrl, { signal: controller.signal });
+    clearTimeout(timeoutId);
+
+    if (res.ok) {
+      const data = await res.json();
+      return data;
+    }
+  } catch (err) {
+    // Proceed to direct
+  }
+
+  // 2. Direct OneMap route API
   try {
     const token = await getOneMapToken();
     const headers: Record<string, string> = { 'Accept': 'application/json' };
@@ -292,11 +385,9 @@ export async function fetchOneMapRouting(
       headers['Authorization'] = token.startsWith('Bearer ') ? token : `Bearer ${token}`;
     }
 
-    // Strictly enforce walk routeType for walking and sheltered navigation
-    const enforcedRouteType = 'walk';
-    const url = `${ONEMAP_ROUTING_URL}?start=${startLat.toFixed(6)},${startLng.toFixed(6)}&end=${endLat.toFixed(6)},${endLng.toFixed(6)}&routeType=${enforcedRouteType}`;
+    const url = `${ONEMAP_ROUTING_URL}?start=${startStr}&end=${endStr}&routeType=${routeType}`;
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 6000);
+    const timeoutId = setTimeout(() => controller.abort(), 2500);
 
     const res = await fetch(url, { headers, signal: controller.signal });
     clearTimeout(timeoutId);
@@ -304,11 +395,9 @@ export async function fetchOneMapRouting(
     if (res.ok) {
       const data = await res.json();
       return data;
-    } else {
-      console.warn(`OneMap route API returned ${res.status}:`, await res.text().catch(() => ''));
     }
   } catch (err) {
-    console.warn('OneMap routing API call failed (CORS or token required), returning null for synthetic computation fallback:', err);
+    // Fallback handled in computeComfortRoutes
   }
   return null;
 }
@@ -351,132 +440,107 @@ export async function computeComfortRoutes(
     const coords2 = rawCoordinates.slice(segLen, segLen * 2 + 1);
     const coords3 = rawCoordinates.slice(segLen * 2);
 
-    // 1. Balanced Route
-    const balancedSegments: RouteSegment[] = [
+    const segmentsBalanced: RouteSegment[] = [
       {
-        type: 'underpass',
-        instruction: `Depart ${start.name} via underground concourse connector`,
+        type: 'sheltered',
+        instruction: `Walk from ${start.name} via sheltered concourse`,
         distanceMeters: Math.round(totalDistanceMeters * 0.35),
         durationMins: Math.max(1, Math.round(baseMins * 0.35)),
         coordinates: coords1,
-        shelterName: 'Underground Pedestrian Network (Air-conditioned)'
+        shelterName: 'LTA Covered Linkway'
       },
       {
-        type: 'sheltered',
-        instruction: `Follow continuous covered linkway canopy along main connector`,
-        distanceMeters: Math.round(totalDistanceMeters * 0.4),
-        durationMins: Math.max(1, Math.round(baseMins * 0.4)),
+        type: 'open',
+        instruction: 'Cross along connecting pedestrian path',
+        distanceMeters: Math.round(totalDistanceMeters * 0.3),
+        durationMins: Math.max(1, Math.round(baseMins * 0.3)),
         coordinates: coords2,
-        shelterName: 'LTA Walk2Ride Covered Canopy'
+        shelterName: 'Open Footpath'
       },
       {
-        type: 'open',
-        instruction: `Arrive at ${end.name} through short tree-shaded entrance walkway`,
-        distanceMeters: Math.round(totalDistanceMeters * 0.25),
-        durationMins: Math.max(1, Math.round(baseMins * 0.25)),
-        coordinates: coords3,
-        shelterName: 'Tree-lined Access Promenade'
-      }
-    ];
-
-    // 2. Shelter-first Route (adds a slight detour to maximize shelter)
-    const shelterFirstSegments: RouteSegment[] = [
-      {
         type: 'sheltered',
-        instruction: `Proceed along 100% weather-protected overhead canopy toward ${end.name}`,
-        distanceMeters: Math.round(totalDistanceMeters * 1.15),
-        durationMins: baseMins + 2,
-        coordinates: rawCoordinates,
-        shelterName: 'Singapore Comprehensive Covered Linkway Grid'
-      }
-    ];
-
-    // 3. Fastest (Direct raw OneMap polyline)
-    const fastestSegments: RouteSegment[] = [
-      {
-        type: 'open',
-        instruction: `Direct street routing to ${end.name} computed via OneMap Routing Service`,
-        distanceMeters: totalDistanceMeters,
-        durationMins: baseMins,
-        coordinates: rawCoordinates,
-        shelterName: 'OneMap Direct Street Pavement'
+        instruction: `Arrive at ${end.name} through sheltered linkway`,
+        distanceMeters: Math.round(totalDistanceMeters * 0.35),
+        durationMins: Math.max(1, Math.round(baseMins * 0.35)),
+        coordinates: coords3,
+        shelterName: 'Building Arcade Linkway'
       }
     ];
 
     const routes: RouteOption[] = [
       {
         id: 'balanced',
-        name: 'Balanced',
-        subtitle: `Via ${start.name} sheltered link & canopy`,
-        badge: 'Komfy Pick',
+        name: 'Balanced Comfort Walk',
+        subtitle: 'Optimized via OneMap & Sheltered Linkways',
+        badge: 'Recommended',
         isKomfyPick: true,
-        durationMins: baseMins + 1,
-        distanceKm: Number((baseDistanceKm * 1.05).toFixed(2)),
-        shelteredPercentage: sunShadeMode ? 68 : 58,
-        shadePercentage: 75,
+        shelteredPercentage: 78,
+        shadePercentage: 74,
+        durationMins: Math.round(baseMins * 1.05),
+        distanceKm: Number((baseDistanceKm * 1.04).toFixed(2)),
         uvExposureIndex: 'Low',
-        rainRisk: 'dry',
+        rainRisk: 'light',
         weatherStripType: 'balanced',
-        summary: `OneMap routing enhanced with Singapore covered linkways and shaded canopy trees.`,
-        features: ['OneMap Official Route', '58% sheltered', 'Shaded trees', 'Covered links'],
+        summary: `OneMap routing enhanced with 78% covered linkways. Minor 1 min detour for high shade.`,
+        features: ['78% Covered Walkways', 'Tree-canopy shade', 'OneMap verified path'],
         tags: [
-          { label: 'OneMap API', icon: 'map' },
-          { label: 'Covered linkway', icon: 'umbrella' }
+          { label: '78% Sheltered', icon: 'shield' },
+          { label: 'OneMap Engine', icon: 'navigation' },
+          { label: 'Optimal UV', icon: 'sun' }
         ],
         coordinates: rawCoordinates,
-        segments: balancedSegments
+        segments: segmentsBalanced
       },
       {
-        id: 'shelter-first',
-        name: 'Shelter-first',
-        subtitle: 'Maximized rain & UV protection',
-        badge: 'Max Protection',
+        id: 'sheltered_max',
+        name: 'Maximum Shelter Route',
+        subtitle: 'Highest covered walkways & underground links',
+        badge: 'Maximum Rain/Sun Defense',
         isKomfyPick: false,
-        durationMins: baseMins + 2,
-        distanceKm: Number((baseDistanceKm * 1.15).toFixed(2)),
-        shelteredPercentage: sunShadeMode ? 88 : 78,
-        shadePercentage: 90,
+        shelteredPercentage: 94,
+        shadePercentage: 92,
+        durationMins: Math.round(baseMins * 1.15),
+        distanceKm: Number((baseDistanceKm * 1.12).toFixed(2)),
         uvExposureIndex: 'Low',
         rainRisk: 'dry',
         weatherStripType: 'dry',
-        summary: `Prioritizes full roof coverage and MRT underpasses to keep you 100% dry.`,
-        features: ['78% sheltered', 'Air-conditioned undergrounds', 'Heavy rain safe'],
+        summary: `Prioritizes HDB void decks, shopping mall networks, and MRT underpasses.`,
+        features: ['94% Dry & Shaded', 'Underground + Void Decks', 'Heavy Rain Safe'],
         tags: [
-          { label: 'Full canopy', icon: 'umbrella' },
-          { label: 'Dry in storms', icon: 'shield' }
+          { label: '94% Sheltered', icon: 'umbrella' },
+          { label: 'Underground/Mall', icon: 'shield' }
         ],
         coordinates: rawCoordinates,
-        segments: shelterFirstSegments
+        segments: segmentsBalanced.map(s => ({ ...s, type: 'sheltered' as const, shelterName: 'Covered Network' }))
       },
       {
         id: 'fastest',
-        name: routeType === 'drive' ? 'Fastest Drive' : routeType === 'cycle' ? 'Fastest Cycle' : routeType === 'pt' ? 'Public Transit' : 'Fastest Walk',
+        name: 'Fastest Walk',
         subtitle: 'Direct OneMap geometry',
         badge: 'Fastest ETA',
         isKomfyPick: false,
+        shelteredPercentage: 32,
+        shadePercentage: 35,
         durationMins: baseMins,
         distanceKm: baseDistanceKm,
-        shelteredPercentage: 35,
-        shadePercentage: 38,
         uvExposureIndex: 'High',
         rainRisk: 'heavy',
         weatherStripType: 'rain',
         summary: `Shortest OneMap distance. High exposure to sun & rain.`,
-        features: [`${baseMins} min ${routeType}`, 'Direct street line', 'Standard exposure'],
+        features: [`${baseMins} min walk`, 'Direct street line', 'Standard exposure'],
         tags: [
           { label: 'Direct', icon: 'bolt' },
           { label: 'OneMap Engine', icon: 'navigation' }
         ],
         coordinates: rawCoordinates,
-        segments: fastestSegments
+        segments: segmentsBalanced.map(s => ({ ...s, type: 'open' as const, shelterName: 'Direct Street Pavement' }))
       }
     ];
 
     return { routes, isLiveOneMap: true };
   }
 
-  // Fallback to Singapore realistic geometric route generator
-  const { generateRoutes } = await import('../data/singaporeData');
+  // Fallback to Singapore realistic geometric route generator instantly
   const fallbackRoutes = generateRoutes(start, end, departTime, sunShadeMode);
   return { routes: fallbackRoutes, isLiveOneMap: false };
 }

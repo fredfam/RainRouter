@@ -8,7 +8,7 @@ import {
   TrafficCamera,
   CarparkInfo
 } from '../types';
-import { SINGAPORE_LANDMARKS } from '../data/singaporeData';
+import { SINGAPORE_LANDMARKS, generateRoutes } from '../data/singaporeData';
 import {
   searchOneMap,
   reverseGeocodeOneMap,
@@ -44,12 +44,14 @@ interface RoutePlannerProps {
   weather: WeatherForecastItem[];
   trafficCameras: TrafficCamera[];
   carparks: CarparkInfo[];
+  onShowToast?: (message: string, type?: 'info' | 'error' | 'success') => void;
 }
 
 export const RoutePlanner: React.FC<RoutePlannerProps> = ({
   weather,
   trafficCameras,
-  carparks
+  carparks,
+  onShowToast
 }) => {
   // Route selection states
   const [startQuery, setStartQuery] = useState('Novena MRT Station');
@@ -65,8 +67,10 @@ export const RoutePlanner: React.FC<RoutePlannerProps> = ({
   const [selectedRouteId, setSelectedRouteId] = useState<string>('balanced');
   const [showSteps, setShowSteps] = useState(false);
 
-  // Computed routes state
-  const [routes, setRoutes] = useState<RouteOption[]>([]);
+  // Computed routes state - initialized immediately with ready routes to prevent empty UI
+  const [routes, setRoutes] = useState<RouteOption[]>(() =>
+    generateRoutes(SINGAPORE_LANDMARKS[3], SINGAPORE_LANDMARKS[4], 'Now', true)
+  );
   const [isLiveOneMap, setIsLiveOneMap] = useState<boolean>(false);
   const [isCalculating, setIsCalculating] = useState<boolean>(false);
 
@@ -117,22 +121,24 @@ export const RoutePlanner: React.FC<RoutePlannerProps> = ({
     setIsCalculating(true);
     try {
       const result = await computeComfortRoutes(startLoc, endLoc, 'walk', sunShadeActive, departTime);
-      setRoutes(result.routes);
-      setIsLiveOneMap(result.isLiveOneMap);
-      if (!result.routes.some(r => r.id === selectedRouteId)) {
-        setSelectedRouteId('balanced');
-      }
+      if (result.routes && result.routes.length > 0) {
+        setRoutes(result.routes);
+        setIsLiveOneMap(result.isLiveOneMap);
+        if (!result.routes.some(r => r.id === selectedRouteId)) {
+          setSelectedRouteId('balanced');
+        }
 
-      // Smoothly fit map bounds to the calculated route
-      if (mapInstanceRef.current && result.routes.length > 0) {
-        const topRoute = result.routes[0];
-        if (topRoute.coordinates && topRoute.coordinates.length > 0) {
-          const group = L.featureGroup([
-            L.marker([startLoc.lat, startLoc.lng]),
-            L.marker([endLoc.lat, endLoc.lng]),
-            ...topRoute.coordinates.map(c => L.marker(c))
-          ]);
-          mapInstanceRef.current.fitBounds(group.getBounds(), { padding: [60, 60], maxZoom: 16 });
+        // Smoothly fit map bounds to the calculated route
+        if (mapInstanceRef.current) {
+          const topRoute = result.routes.find(r => r.id === selectedRouteId) || result.routes[0];
+          if (topRoute?.coordinates && topRoute.coordinates.length > 0) {
+            const group = L.featureGroup([
+              L.marker([startLoc.lat, startLoc.lng]),
+              L.marker([endLoc.lat, endLoc.lng]),
+              ...topRoute.coordinates.map(c => L.marker(c))
+            ]);
+            mapInstanceRef.current.fitBounds(group.getBounds(), { padding: [60, 60], maxZoom: 16 });
+          }
         }
       }
     } catch (err) {
@@ -148,7 +154,26 @@ export const RoutePlanner: React.FC<RoutePlannerProps> = ({
 
   const handlePlanWalkClick = async () => {
     setIsMobileExpanded(true);
-    await calculateRoutes();
+    // Resolve start and end if user typed in text without selecting a dropdown item
+    let activeStart = selectedStart;
+    let activeEnd = selectedEnd;
+
+    if (startQuery.trim() && startQuery.trim() !== selectedStart.name && startSuggestions.length > 0) {
+      activeStart = startSuggestions[0];
+      setSelectedStart(activeStart);
+      setStartQuery(activeStart.name);
+    }
+
+    if (endQuery.trim() && endQuery.trim() !== selectedEnd.name && endSuggestions.length > 0) {
+      activeEnd = endSuggestions[0];
+      setSelectedEnd(activeEnd);
+      setEndQuery(activeEnd.name);
+    }
+
+    setShowStartSuggestions(false);
+    setShowEndSuggestions(false);
+    await calculateRoutes(activeStart, activeEnd);
+    onShowToast?.(`Walking route planned for ${activeStart.name} ➔ ${activeEnd.name}`, 'success');
   };
 
   const activeRoute = routes.find(r => r.id === selectedRouteId) || routes[0] || null;
@@ -217,6 +242,11 @@ export const RoutePlanner: React.FC<RoutePlannerProps> = ({
     // Add zoom control to top-right
     L.control.zoom({ position: 'topright' }).addTo(map);
 
+    // Invalidate map size after mounting to prevent blank tiles/canvas
+    setTimeout(() => {
+      map.invalidateSize();
+    }, 250);
+
     // Map Click to Set Destination via Reverse Geocoding
     map.on('click', async (e: L.LeafletMouseEvent) => {
       const { lat, lng } = e.latlng;
@@ -224,6 +254,7 @@ export const RoutePlanner: React.FC<RoutePlannerProps> = ({
       if (reversePreset) {
         setSelectedEnd(reversePreset);
         setEndQuery(reversePreset.name);
+        calculateRoutes(selectedStart, reversePreset);
       }
     });
 
@@ -232,6 +263,16 @@ export const RoutePlanner: React.FC<RoutePlannerProps> = ({
       mapInstanceRef.current = null;
     };
   }, []);
+
+  // Handle map resizing when mobile bottom sheet expands or collapses
+  useEffect(() => {
+    if (mapInstanceRef.current) {
+      const timer = setTimeout(() => {
+        mapInstanceRef.current?.invalidateSize();
+      }, 320);
+      return () => clearTimeout(timer);
+    }
+  }, [isMobileExpanded]);
 
   // Update Base Layer
   useEffect(() => {
@@ -449,18 +490,21 @@ export const RoutePlanner: React.FC<RoutePlannerProps> = ({
     setStartQuery(endQuery);
     setSelectedEnd(tempPreset);
     setEndQuery(tempQuery);
+    calculateRoutes(selectedEnd, tempPreset);
   };
 
   const handleSelectStart = (preset: LocationPreset) => {
     setSelectedStart(preset);
     setStartQuery(preset.name);
     setShowStartSuggestions(false);
+    calculateRoutes(preset, selectedEnd);
   };
 
   const handleSelectEnd = (preset: LocationPreset) => {
     setSelectedEnd(preset);
     setEndQuery(preset.name);
     setShowEndSuggestions(false);
+    calculateRoutes(selectedStart, preset);
   };
 
   const handleLocateMe = () => {
@@ -701,6 +745,12 @@ export const RoutePlanner: React.FC<RoutePlannerProps> = ({
                     setShowStartSuggestions(true);
                   }}
                   onFocus={() => setShowStartSuggestions(true)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      handlePlanWalkClick();
+                    }
+                  }}
                   placeholder="Search start address / MRT in OneMap..."
                   className="flex-1 text-xs sm:text-sm font-medium text-[#1a1b21] bg-transparent outline-hidden"
                 />
@@ -756,6 +806,12 @@ export const RoutePlanner: React.FC<RoutePlannerProps> = ({
                     setShowEndSuggestions(true);
                   }}
                   onFocus={() => setShowEndSuggestions(true)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      handlePlanWalkClick();
+                    }
+                  }}
                   placeholder="Search destination in OneMap..."
                   className="flex-1 text-xs sm:text-sm font-medium text-[#1a1b21] bg-transparent outline-hidden"
                 />

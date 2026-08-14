@@ -106,6 +106,7 @@ export default function App() {
             weather={weather}
             trafficCameras={trafficCameras}
             carparks={carparks}
+            onShowToast={showToast}
           />
         )}
 
