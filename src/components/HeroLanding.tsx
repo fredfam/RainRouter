@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Umbrella, Sun, Radar, ArrowRight, Shield, Footprints, Sparkles } from 'lucide-react';
 import { WeatherForecastItem, PsiData } from '../types';
+import { DisqusFeedback } from './DisqusFeedback';
 
 interface HeroLandingProps {
   onPlanRoute: () => void;
@@ -224,6 +225,9 @@ export const HeroLanding: React.FC<HeroLandingProps> = ({ onPlanRoute, weather, 
           </button>
         </div>
       </section>
+
+      {/* Community Feedback & Discussion Section (Disqus) */}
+      <DisqusFeedback />
     </div>
   );
 };
