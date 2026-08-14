@@ -15,7 +15,20 @@ const EXPIRY_KEY = 'onemap_token_expiry';
  * Tokens generated last up to 3 days (approx 72 hours).
  */
 export async function getOneMapToken(customEmail?: string, customPassword?: string): Promise<string | null> {
-  // Check localStorage first
+  // Check static/pre-set token from environment variables (e.g., Vercel `OneMapAPI`)
+  const envToken =
+    (typeof process !== 'undefined' ? process.env?.OneMapAPI : undefined) ||
+    (import.meta as any).env?.OneMapAPI ||
+    (import.meta as any).env?.VITE_OneMapAPI ||
+    (typeof process !== 'undefined' ? process.env?.VITE_OneMapAPI : undefined) ||
+    (import.meta as any).env?.VITE_ONEMAP_API_TOKEN ||
+    (typeof process !== 'undefined' ? process.env?.VITE_ONEMAP_API_TOKEN : undefined);
+
+  if (envToken && typeof envToken === 'string' && envToken.trim().length > 0) {
+    return envToken.trim();
+  }
+
+  // Check localStorage second
   try {
     const cachedToken = localStorage.getItem(TOKEN_KEY);
     const cachedExpiry = localStorage.getItem(EXPIRY_KEY);
@@ -65,12 +78,6 @@ export async function getOneMapToken(customEmail?: string, customPassword?: stri
     } catch (err) {
       console.warn('Failed to mint token via OneMap API:', err);
     }
-  }
-
-  // Check if static token is defined in import.meta.env
-  const staticToken = (import.meta as any).env?.VITE_ONEMAP_API_TOKEN;
-  if (staticToken) {
-    return staticToken;
   }
 
   // Return cached token anyway if available, even if expired as fallback

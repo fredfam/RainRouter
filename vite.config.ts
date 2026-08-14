@@ -6,6 +6,11 @@ import {defineConfig} from 'vite';
 export default defineConfig(() => {
   return {
     plugins: [react(), tailwindcss()],
+    define: {
+      'process.env.OneMapAPI': JSON.stringify(process.env.OneMapAPI || process.env.VITE_OneMapAPI || process.env.VITE_ONEMAP_API_TOKEN || ''),
+      'process.env.ONEMAP_EMAIL': JSON.stringify(process.env.ONEMAP_EMAIL || process.env.VITE_ONEMAP_EMAIL || ''),
+      'process.env.ONEMAP_PASSWORD': JSON.stringify(process.env.ONEMAP_PASSWORD || process.env.VITE_ONEMAP_PASSWORD || ''),
+    },
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),
