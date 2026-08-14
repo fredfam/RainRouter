@@ -29,8 +29,6 @@ import {
   CloudRain,
   Camera,
   Car,
-  Bike,
-  Bus,
   ChevronDown,
   ChevronUp,
   Info,
@@ -112,26 +110,46 @@ export const RoutePlanner: React.FC<RoutePlannerProps> = ({
     });
   }, []);
 
-  // Compute routes asynchronously using OneMap routing engine
-  const calculateRoutes = useCallback(async () => {
+  // Compute routes asynchronously using OneMap routing engine (Walk mode strictly)
+  const calculateRoutes = useCallback(async (customStart?: LocationPreset, customEnd?: LocationPreset) => {
+    const startLoc = customStart || selectedStart;
+    const endLoc = customEnd || selectedEnd;
     setIsCalculating(true);
     try {
-      const result = await computeComfortRoutes(selectedStart, selectedEnd, routeType, sunShadeActive, departTime);
+      const result = await computeComfortRoutes(startLoc, endLoc, 'walk', sunShadeActive, departTime);
       setRoutes(result.routes);
       setIsLiveOneMap(result.isLiveOneMap);
       if (!result.routes.some(r => r.id === selectedRouteId)) {
         setSelectedRouteId('balanced');
+      }
+
+      // Smoothly fit map bounds to the calculated route
+      if (mapInstanceRef.current && result.routes.length > 0) {
+        const topRoute = result.routes[0];
+        if (topRoute.coordinates && topRoute.coordinates.length > 0) {
+          const group = L.featureGroup([
+            L.marker([startLoc.lat, startLoc.lng]),
+            L.marker([endLoc.lat, endLoc.lng]),
+            ...topRoute.coordinates.map(c => L.marker(c))
+          ]);
+          mapInstanceRef.current.fitBounds(group.getBounds(), { padding: [60, 60], maxZoom: 16 });
+        }
       }
     } catch (err) {
       console.warn('Error calculating routes:', err);
     } finally {
       setIsCalculating(false);
     }
-  }, [selectedStart, selectedEnd, routeType, sunShadeActive, departTime, selectedRouteId]);
+  }, [selectedStart, selectedEnd, sunShadeActive, departTime, selectedRouteId]);
 
   useEffect(() => {
     calculateRoutes();
   }, [calculateRoutes]);
+
+  const handlePlanWalkClick = async () => {
+    setIsMobileExpanded(true);
+    await calculateRoutes();
+  };
 
   const activeRoute = routes.find(r => r.id === selectedRouteId) || routes[0] || null;
 
@@ -652,52 +670,16 @@ export const RoutePlanner: React.FC<RoutePlannerProps> = ({
             <p className="text-xs text-[#434652] mt-0.5">Singapore OneMap REST API & Sheltered Path Engine</p>
           </div>
 
-          {/* Mode Selector: Walk | Drive | PT | Cycle */}
-          <div className="grid grid-cols-4 gap-1.5 bg-gray-100/80 p-1 rounded-xl border border-gray-200/60">
-            <button
-              onClick={() => setRouteType('walk')}
-              className={`flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
-                routeType === 'walk'
-                  ? 'bg-[#003178] text-white shadow-xs'
-                  : 'text-gray-600 hover:text-gray-900 hover:bg-white/50'
-              }`}
-            >
-              <Footprints className="w-3.5 h-3.5" />
-              <span>Walk</span>
-            </button>
-            <button
-              onClick={() => setRouteType('drive')}
-              className={`flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
-                routeType === 'drive'
-                  ? 'bg-[#003178] text-white shadow-xs'
-                  : 'text-gray-600 hover:text-gray-900 hover:bg-white/50'
-              }`}
-            >
-              <Car className="w-3.5 h-3.5" />
-              <span>Drive</span>
-            </button>
-            <button
-              onClick={() => setRouteType('cycle')}
-              className={`flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
-                routeType === 'cycle'
-                  ? 'bg-[#003178] text-white shadow-xs'
-                  : 'text-gray-600 hover:text-gray-900 hover:bg-white/50'
-              }`}
-            >
-              <Bike className="w-3.5 h-3.5" />
-              <span>Cycle</span>
-            </button>
-            <button
-              onClick={() => setRouteType('pt')}
-              className={`flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
-                routeType === 'pt'
-                  ? 'bg-[#003178] text-white shadow-xs'
-                  : 'text-gray-600 hover:text-gray-900 hover:bg-white/50'
-              }`}
-            >
-              <Bus className="w-3.5 h-3.5" />
-              <span>Transit</span>
-            </button>
+          {/* Walk & Sheltered Route Indicator (Dedicated Walk Mode) */}
+          <div className="flex items-center justify-between px-3.5 py-2.5 bg-[#003178]/5 border border-[#003178]/15 rounded-xl text-xs">
+            <div className="flex items-center gap-2 text-[#003178] font-bold">
+              <Footprints className="w-4 h-4 text-[#003178]" />
+              <span>Walking & Sheltered Route</span>
+            </div>
+            <span className="text-[10px] bg-[#003178] text-white font-semibold px-2.5 py-0.5 rounded-full flex items-center gap-1">
+              <Umbrella className="w-3 h-3" />
+              Shelter-Optimized
+            </span>
           </div>
 
           {/* Start and Destination Input Box with Live OneMap Search */}
@@ -812,6 +794,7 @@ export const RoutePlanner: React.FC<RoutePlannerProps> = ({
               onClick={() => {
                 handleSelectStart(SINGAPORE_LANDMARKS[3]);
                 handleSelectEnd(SINGAPORE_LANDMARKS[4]);
+                calculateRoutes(SINGAPORE_LANDMARKS[3], SINGAPORE_LANDMARKS[4]);
               }}
               className="px-2.5 py-1 rounded-lg bg-white/80 hover:bg-white text-[#003178] border border-gray-200 shrink-0 font-medium cursor-pointer text-xs"
             >
@@ -821,6 +804,7 @@ export const RoutePlanner: React.FC<RoutePlannerProps> = ({
               onClick={() => {
                 handleSelectStart(SINGAPORE_LANDMARKS[0]);
                 handleSelectEnd(SINGAPORE_LANDMARKS[1]);
+                calculateRoutes(SINGAPORE_LANDMARKS[0], SINGAPORE_LANDMARKS[1]);
               }}
               className="px-2.5 py-1 rounded-lg bg-white/80 hover:bg-white text-[#003178] border border-gray-200 shrink-0 font-medium cursor-pointer text-xs"
             >
@@ -830,6 +814,7 @@ export const RoutePlanner: React.FC<RoutePlannerProps> = ({
               onClick={() => {
                 handleSelectStart(SINGAPORE_LANDMARKS[6]);
                 handleSelectEnd(SINGAPORE_LANDMARKS[5]);
+                calculateRoutes(SINGAPORE_LANDMARKS[6], SINGAPORE_LANDMARKS[5]);
               }}
               className="px-2.5 py-1 rounded-lg bg-white/80 hover:bg-white text-[#003178] border border-gray-200 shrink-0 font-medium cursor-pointer text-xs"
             >
@@ -880,21 +865,21 @@ export const RoutePlanner: React.FC<RoutePlannerProps> = ({
             </div>
           </div>
 
-          {/* Primary Action Button */}
+          {/* Primary Action Button: Plan a Walk */}
           <button
-            onClick={calculateRoutes}
+            onClick={handlePlanWalkClick}
             disabled={isCalculating}
-            className="w-full bg-[#003178] hover:bg-[#002254] text-white font-semibold py-2.5 px-4 rounded-xl shadow-md transition-all active:scale-[0.98] flex items-center justify-center gap-2 text-sm cursor-pointer disabled:opacity-75"
+            className="w-full bg-[#003178] hover:bg-[#002254] text-white font-bold py-3 px-4 rounded-xl shadow-md hover:shadow-lg transition-all active:scale-[0.98] flex items-center justify-center gap-2 text-sm cursor-pointer disabled:opacity-75"
           >
             {isCalculating ? (
               <>
                 <RefreshCw className="w-4 h-4 animate-spin" />
-                <span>Computing OneMap Route...</span>
+                <span>Finding Sheltered Walk...</span>
               </>
             ) : (
               <>
-                <Navigation className="w-4 h-4" />
-                <span>Calculate OneMap Route</span>
+                <Footprints className="w-4 h-4" />
+                <span>Plan a Walk</span>
               </>
             )}
           </button>

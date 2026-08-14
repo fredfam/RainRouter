@@ -75,6 +75,11 @@ export default function App() {
     return () => clearInterval(interval);
   }, [loadAllData]);
 
+  const handleTabChange = (tab: NavTab) => {
+    setCurrentTab(tab);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
   return (
     <div className="min-h-screen bg-[#faf8ff] text-[#1a1b21] flex flex-col font-sans selection:bg-[#003178]/20 selection:text-[#003178]">
       {/* Toast Notification */}
@@ -87,7 +92,7 @@ export default function App() {
       {/* Main Top Header */}
       <Header
         currentTab={currentTab}
-        onTabChange={setCurrentTab}
+        onTabChange={handleTabChange}
         weather={weather}
         psi={psi}
         isLoading={isLoading}
@@ -106,7 +111,7 @@ export default function App() {
 
         {currentTab === 'landing' && (
           <HeroLanding
-            onPlanRoute={() => setCurrentTab('plan')}
+            onPlanRoute={() => handleTabChange('plan')}
             weather={weather}
             psi={psi}
           />
@@ -116,7 +121,7 @@ export default function App() {
           <WeatherRadarDashboard
             weather={weather}
             psi={psi}
-            onPlanShelteredRoute={() => setCurrentTab('plan')}
+            onPlanShelteredRoute={() => handleTabChange('plan')}
           />
         )}
 
@@ -130,16 +135,16 @@ export default function App() {
         )}
 
         {currentTab === 'canvas' && (
-          <CanvasView onExploreApp={() => setCurrentTab('plan')} />
+          <CanvasView onExploreApp={() => handleTabChange('plan')} />
         )}
 
         {currentTab === 'faq' && (
-          <FAQView onPlanRoute={() => setCurrentTab('plan')} />
+          <FAQView onPlanRoute={() => handleTabChange('plan')} />
         )}
       </main>
 
       {/* Footer (with Mobile Bottom Nav Bar) */}
-      <Footer currentTab={currentTab} onTabChange={setCurrentTab} />
+      <Footer currentTab={currentTab} onTabChange={handleTabChange} />
     </div>
   );
 }

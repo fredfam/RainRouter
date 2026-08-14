@@ -276,7 +276,7 @@ export function decodePolyline(encoded: string): [number, number][] {
 
 /**
  * Fetch route computation from OneMap Routing Service
- * Endpoint: https://www.onemap.gov.sg/api/public/routingsvc/route?start={start_lat,start_lng}&end={end_lat,end_lng}&routeType={walk|drive|cycle|pt}
+ * Endpoint: https://www.onemap.gov.sg/api/public/routingsvc/route?start={start_lat,start_lng}&end={end_lat,end_lng}&routeType=walk
  */
 export async function fetchOneMapRouting(
   startLat: number,
@@ -292,7 +292,9 @@ export async function fetchOneMapRouting(
       headers['Authorization'] = token.startsWith('Bearer ') ? token : `Bearer ${token}`;
     }
 
-    const url = `${ONEMAP_ROUTING_URL}?start=${startLat.toFixed(6)},${startLng.toFixed(6)}&end=${endLat.toFixed(6)},${endLng.toFixed(6)}&routeType=${routeType}`;
+    // Strictly enforce walk routeType for walking and sheltered navigation
+    const enforcedRouteType = 'walk';
+    const url = `${ONEMAP_ROUTING_URL}?start=${startLat.toFixed(6)},${startLng.toFixed(6)}&end=${endLat.toFixed(6)},${endLng.toFixed(6)}&routeType=${enforcedRouteType}`;
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 6000);
 

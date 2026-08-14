@@ -88,18 +88,6 @@ export const Header: React.FC<HeaderProps> = ({
             <Layers className="w-4 h-4" />
             Live Civic Data
           </button>
-
-          <button
-            onClick={() => handleNav('canvas')}
-            className={`px-3.5 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 cursor-pointer flex items-center gap-1.5 ${
-              currentTab === 'canvas'
-                ? 'text-[#003178] bg-[#003178]/10 font-semibold shadow-xs'
-                : 'text-[#434652] hover:text-[#003178] hover:bg-[#003178]/5'
-            }`}
-          >
-            <ShieldCheck className="w-4 h-4" />
-            Business Canvas
-          </button>
         </nav>
 
         {/* Right Side Info & Actions */}
@@ -183,15 +171,6 @@ export const Header: React.FC<HeaderProps> = ({
           >
             <Layers className="w-4 h-4" />
             Civic Data (Traffic & Carparks)
-          </button>
-          <button
-            onClick={() => handleNav('canvas')}
-            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium ${
-              currentTab === 'canvas' ? 'bg-[#003178]/10 text-[#003178] font-bold' : 'text-[#434652]'
-            }`}
-          >
-            <ShieldCheck className="w-4 h-4" />
-            RainRouter Business Model Canvas
           </button>
         </div>
       )}

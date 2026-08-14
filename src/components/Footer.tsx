@@ -38,12 +38,6 @@ export const Footer: React.FC<FooterProps> = ({ currentTab, onTabChange }) => {
             LTA Traffic & Carparks
           </button>
           <button
-            onClick={() => onTabChange('canvas')}
-            className="hover:text-[#003178] hover:underline cursor-pointer"
-          >
-            Business Model
-          </button>
-          <button
             onClick={() => onTabChange('faq')}
             className="hover:text-[#003178] hover:underline cursor-pointer"
           >
@@ -93,17 +87,17 @@ export const Footer: React.FC<FooterProps> = ({ currentTab, onTabChange }) => {
           <span className="text-[10px] mt-0.5">Radar</span>
         </button>
 
-        {/* Canvas / Support */}
+        {/* Civic Data */}
         <button
-          onClick={() => onTabChange('canvas')}
+          onClick={() => onTabChange('civic')}
           className={`flex flex-col items-center justify-center px-2 py-1 rounded-xl transition-all cursor-pointer ${
-            currentTab === 'canvas'
+            currentTab === 'civic'
               ? 'text-[#003178] font-bold'
               : 'text-[#434652] hover:text-[#003178]'
           }`}
         >
-          <ShieldCheck className="w-5 h-5" />
-          <span className="text-[10px] mt-0.5">Canvas</span>
+          <HelpCircle className="w-5 h-5" />
+          <span className="text-[10px] mt-0.5">Civic</span>
         </button>
       </nav>
     </>
