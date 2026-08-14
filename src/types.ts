@@ -1,12 +1,43 @@
 export type NavTab = 'plan' | 'landing' | 'radar' | 'civic' | 'canvas' | 'faq';
 
+export type RouteType = 'walk' | 'drive' | 'cycle' | 'pt';
+
 export interface LocationPreset {
   id: string;
   name: string;
-  category: 'mrt' | 'landmark' | 'mall' | 'transport';
+  category: 'mrt' | 'landmark' | 'mall' | 'transport' | 'address';
   lat: number;
   lng: number;
   description?: string;
+  postalCode?: string;
+  address?: string;
+}
+
+export interface OneMapSearchResult {
+  SEARCHVAL: string;
+  BLK_NO: string;
+  ROAD_NAME: string;
+  BUILDING: string;
+  ADDRESS: string;
+  POSTAL: string;
+  X: string;
+  Y: string;
+  LATITUDE: string;
+  LONGITUDE: string;
+}
+
+export interface OneMapRouteResponse {
+  status_message?: string;
+  route_geometry?: string;
+  route_summary?: {
+    total_distance: number;
+    total_time: number;
+    start_point: string;
+    end_point: string;
+  };
+  route_instructions?: string[][];
+  route_name?: string[];
+  error?: string;
 }
 
 export interface RouteSegment {

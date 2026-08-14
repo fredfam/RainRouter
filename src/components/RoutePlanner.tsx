@@ -1,13 +1,21 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import L from 'leaflet';
 import {
   LocationPreset,
   RouteOption,
+  RouteType,
   WeatherForecastItem,
   TrafficCamera,
   CarparkInfo
 } from '../types';
-import { SINGAPORE_LANDMARKS, generateRoutes } from '../data/singaporeData';
+import { SINGAPORE_LANDMARKS } from '../data/singaporeData';
+import {
+  searchOneMap,
+  reverseGeocodeOneMap,
+  computeComfortRoutes,
+  getOneMapToken,
+  setManualOneMapToken
+} from '../services/oneMapService';
 import {
   Search,
   ArrowUpDown,
@@ -21,11 +29,17 @@ import {
   CloudRain,
   Camera,
   Car,
+  Bike,
+  Bus,
   ChevronDown,
   ChevronUp,
   Info,
   CheckCircle2,
-  AlertTriangle
+  AlertTriangle,
+  Key,
+  Navigation,
+  Sparkles,
+  RefreshCw
 } from 'lucide-react';
 
 interface RoutePlannerProps {
@@ -40,15 +54,23 @@ export const RoutePlanner: React.FC<RoutePlannerProps> = ({
   carparks
 }) => {
   // Route selection states
-  const [startQuery, setStartQuery] = useState('Raffles Place MRT');
-  const [endQuery, setEndQuery] = useState('Marina Bay Sands');
-  const [selectedStart, setSelectedStart] = useState<LocationPreset>(SINGAPORE_LANDMARKS[0]);
-  const [selectedEnd, setSelectedEnd] = useState<LocationPreset>(SINGAPORE_LANDMARKS[1]);
+  const [startQuery, setStartQuery] = useState('Novena MRT Station');
+  const [endQuery, setEndQuery] = useState('Toa Payoh Bus Interchange');
+  const [selectedStart, setSelectedStart] = useState<LocationPreset>(SINGAPORE_LANDMARKS[3]); // Novena
+  const [selectedEnd, setSelectedEnd] = useState<LocationPreset>(SINGAPORE_LANDMARKS[4]); // Toa Payoh
+
+  // Route type: walk | drive | cycle | pt
+  const [routeType, setRouteType] = useState<RouteType>('walk');
 
   const [sunShadeActive, setSunShadeActive] = useState(true);
   const [departTime, setDepartTime] = useState<'Now' | '12 PM' | '1 PM' | 'Custom'>('Now');
   const [selectedRouteId, setSelectedRouteId] = useState<string>('balanced');
   const [showSteps, setShowSteps] = useState(false);
+
+  // Computed routes state
+  const [routes, setRoutes] = useState<RouteOption[]>([]);
+  const [isLiveOneMap, setIsLiveOneMap] = useState<boolean>(false);
+  const [isCalculating, setIsCalculating] = useState<boolean>(false);
 
   // Map layer controls
   const [activeBaseLayer, setActiveBaseLayer] = useState<'onemap' | 'carto' | 'osm'>('onemap');
@@ -60,12 +82,20 @@ export const RoutePlanner: React.FC<RoutePlannerProps> = ({
   const [isMobileExpanded, setIsMobileExpanded] = useState(false);
 
   // Autocomplete suggestions
+  const [startSuggestions, setStartSuggestions] = useState<LocationPreset[]>(SINGAPORE_LANDMARKS.slice(0, 5));
+  const [endSuggestions, setEndSuggestions] = useState<LocationPreset[]>(SINGAPORE_LANDMARKS.slice(0, 5));
   const [showStartSuggestions, setShowStartSuggestions] = useState(false);
   const [showEndSuggestions, setShowEndSuggestions] = useState(false);
+  const [isSearchingStart, setIsSearchingStart] = useState(false);
+  const [isSearchingEnd, setIsSearchingEnd] = useState(false);
 
-  // Routes calculation
-  const routes = generateRoutes(selectedStart, selectedEnd, departTime, sunShadeActive);
-  const activeRoute = routes.find(r => r.id === selectedRouteId) || routes[0];
+  // OneMap Token Modal
+  const [showTokenModal, setShowTokenModal] = useState(false);
+  const [tokenEmail, setTokenEmail] = useState('');
+  const [tokenPassword, setTokenPassword] = useState('');
+  const [manualTokenInput, setManualTokenInput] = useState('');
+  const [hasActiveToken, setHasActiveToken] = useState(false);
+  const [tokenStatusMessage, setTokenStatusMessage] = useState<string | null>(null);
 
   // Leaflet map refs
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
@@ -75,18 +105,78 @@ export const RoutePlanner: React.FC<RoutePlannerProps> = ({
   const overlayLayerRef = useRef<L.LayerGroup | null>(null);
   const baseTileLayerRef = useRef<L.TileLayer | null>(null);
 
+  // Check token on mount
+  useEffect(() => {
+    getOneMapToken().then(tok => {
+      if (tok) setHasActiveToken(true);
+    });
+  }, []);
+
+  // Compute routes asynchronously using OneMap routing engine
+  const calculateRoutes = useCallback(async () => {
+    setIsCalculating(true);
+    try {
+      const result = await computeComfortRoutes(selectedStart, selectedEnd, routeType, sunShadeActive, departTime);
+      setRoutes(result.routes);
+      setIsLiveOneMap(result.isLiveOneMap);
+      if (!result.routes.some(r => r.id === selectedRouteId)) {
+        setSelectedRouteId('balanced');
+      }
+    } catch (err) {
+      console.warn('Error calculating routes:', err);
+    } finally {
+      setIsCalculating(false);
+    }
+  }, [selectedStart, selectedEnd, routeType, sunShadeActive, departTime, selectedRouteId]);
+
+  useEffect(() => {
+    calculateRoutes();
+  }, [calculateRoutes]);
+
+  const activeRoute = routes.find(r => r.id === selectedRouteId) || routes[0] || null;
+
+  // Debounced search for Start
+  useEffect(() => {
+    if (!startQuery || startQuery.trim().length < 2) {
+      setStartSuggestions(SINGAPORE_LANDMARKS.slice(0, 5));
+      return;
+    }
+    const timer = setTimeout(async () => {
+      setIsSearchingStart(true);
+      const results = await searchOneMap(startQuery);
+      setStartSuggestions(results.length > 0 ? results : SINGAPORE_LANDMARKS.slice(0, 5));
+      setIsSearchingStart(false);
+    }, 280);
+    return () => clearTimeout(timer);
+  }, [startQuery]);
+
+  // Debounced search for End
+  useEffect(() => {
+    if (!endQuery || endQuery.trim().length < 2) {
+      setEndSuggestions(SINGAPORE_LANDMARKS.slice(0, 5));
+      return;
+    }
+    const timer = setTimeout(async () => {
+      setIsSearchingEnd(true);
+      const results = await searchOneMap(endQuery);
+      setEndSuggestions(results.length > 0 ? results : SINGAPORE_LANDMARKS.slice(0, 5));
+      setIsSearchingEnd(false);
+    }, 280);
+    return () => clearTimeout(timer);
+  }, [endQuery]);
+
   // Initialize Map
   useEffect(() => {
     if (!mapContainerRef.current) return;
     if (mapInstanceRef.current) return;
 
     const map = L.map(mapContainerRef.current, {
-      center: [1.284, 103.854],
-      zoom: 15,
+      center: [1.3238, 103.8500],
+      zoom: 14,
       zoomControl: false
     });
 
-    // Base Tile Layer (OneMap default with fallback to Positron)
+    // Base Tile Layer (OneMap default)
     const onemapTile = L.tileLayer('https://www.onemap.gov.sg/maps/tiles/Default/{z}/{x}/{y}.png', {
       maxZoom: 19,
       minZoom: 11,
@@ -108,6 +198,16 @@ export const RoutePlanner: React.FC<RoutePlannerProps> = ({
 
     // Add zoom control to top-right
     L.control.zoom({ position: 'topright' }).addTo(map);
+
+    // Map Click to Set Destination via Reverse Geocoding
+    map.on('click', async (e: L.LeafletMouseEvent) => {
+      const { lat, lng } = e.latlng;
+      const reversePreset = await reverseGeocodeOneMap(lat, lng);
+      if (reversePreset) {
+        setSelectedEnd(reversePreset);
+        setEndQuery(reversePreset.name);
+      }
+    });
 
     return () => {
       map.remove();
@@ -140,6 +240,7 @@ export const RoutePlanner: React.FC<RoutePlannerProps> = ({
   // Render Routes and Waypoints on Map
   useEffect(() => {
     if (!mapInstanceRef.current || !routeLayersRef.current || !markersLayerRef.current) return;
+    if (!activeRoute) return;
 
     routeLayersRef.current.clearLayers();
     markersLayerRef.current.clearLayers();
@@ -148,6 +249,7 @@ export const RoutePlanner: React.FC<RoutePlannerProps> = ({
     routes.forEach(route => {
       const isSelected = route.id === selectedRouteId;
       const coords = route.coordinates;
+      if (!coords || coords.length === 0) return;
 
       if (isSelected) {
         // Active Route Outline (Glow)
@@ -172,16 +274,18 @@ export const RoutePlanner: React.FC<RoutePlannerProps> = ({
               segDash = '6, 6';
             }
 
-            L.polyline(segment.coordinates, {
-              color: segColor,
-              weight: 6,
-              opacity: 1,
-              dashArray: segDash,
-              lineCap: 'round'
-            }).bindTooltip(`<strong>${segment.shelterName || segment.instruction}</strong><br/>${segment.type.toUpperCase()} · ${segment.distanceMeters}m`, {
-              sticky: true,
-              className: 'text-xs'
-            }).addTo(routeLayersRef.current!);
+            if (segment.coordinates && segment.coordinates.length > 0) {
+              L.polyline(segment.coordinates, {
+                color: segColor,
+                weight: 6,
+                opacity: 1,
+                dashArray: segDash,
+                lineCap: 'round'
+              }).bindTooltip(`<strong>${segment.shelterName || segment.instruction}</strong><br/>${segment.type.toUpperCase()} · ${segment.distanceMeters}m`, {
+                sticky: true,
+                className: 'text-xs'
+              }).addTo(routeLayersRef.current!);
+            }
           });
         } else {
           L.polyline(coords, {
@@ -233,14 +337,16 @@ export const RoutePlanner: React.FC<RoutePlannerProps> = ({
       .bindPopup(`<div class="p-1"><strong>Destination:</strong> ${selectedEnd.name}<br/><span class="text-xs text-gray-500">${selectedEnd.description || 'Singapore'}</span></div>`)
       .addTo(markersLayerRef.current);
 
-    // Fit map bounds to show full route
-    const group = L.featureGroup([
-      L.marker([selectedStart.lat, selectedStart.lng]),
-      L.marker([selectedEnd.lat, selectedEnd.lng]),
-      ...activeRoute.coordinates.map(c => L.marker(c))
-    ]);
-    mapInstanceRef.current.fitBounds(group.getBounds(), { padding: [60, 60], maxZoom: 16 });
-  }, [selectedStart, selectedEnd, selectedRouteId, sunShadeActive]);
+    // Fit map bounds
+    if (activeRoute.coordinates && activeRoute.coordinates.length > 0) {
+      const group = L.featureGroup([
+        L.marker([selectedStart.lat, selectedStart.lng]),
+        L.marker([selectedEnd.lat, selectedEnd.lng]),
+        ...activeRoute.coordinates.map(c => L.marker(c))
+      ]);
+      mapInstanceRef.current.fitBounds(group.getBounds(), { padding: [60, 60], maxZoom: 16 });
+    }
+  }, [selectedStart, selectedEnd, selectedRouteId, activeRoute, routes]);
 
   // Traffic Cameras & Carpark Pins Overlay
   useEffect(() => {
@@ -307,12 +413,12 @@ export const RoutePlanner: React.FC<RoutePlannerProps> = ({
 
     // 3. Simulated NEA Weather Rain Clouds Overlay
     if (showRadarOverlay) {
-      const rainCloudCircle = L.circle([1.295, 103.86], {
+      const rainCloudCircle = L.circle([1.325, 103.85], {
         color: '#00bcd4',
         fillColor: '#03a9f4',
         fillOpacity: 0.35,
-        radius: 1800
-      }).bindPopup('<strong>NEA Live Rain Cell</strong><br/>Light to moderate passing shower moving northeast.');
+        radius: 2000
+      }).bindPopup('<strong>NEA Live Rain Cell</strong><br/>Passing shower cell detected near Novena/Toa Payoh.');
 
       overlayLayerRef.current?.addLayer(rainCloudCircle);
     }
@@ -327,40 +433,79 @@ export const RoutePlanner: React.FC<RoutePlannerProps> = ({
     setEndQuery(tempQuery);
   };
 
-  const handleSelectStart = (landmark: LocationPreset) => {
-    setSelectedStart(landmark);
-    setStartQuery(landmark.name);
+  const handleSelectStart = (preset: LocationPreset) => {
+    setSelectedStart(preset);
+    setStartQuery(preset.name);
     setShowStartSuggestions(false);
   };
 
-  const handleSelectEnd = (landmark: LocationPreset) => {
-    setSelectedEnd(landmark);
-    setEndQuery(landmark.name);
+  const handleSelectEnd = (preset: LocationPreset) => {
+    setSelectedEnd(preset);
+    setEndQuery(preset.name);
     setShowEndSuggestions(false);
   };
 
   const handleLocateMe = () => {
     if (navigator.geolocation && mapInstanceRef.current) {
       navigator.geolocation.getCurrentPosition(
-        pos => {
+        async pos => {
           const { latitude, longitude } = pos.coords;
           mapInstanceRef.current?.setView([latitude, longitude], 16);
-          setSelectedStart({
-            id: 'current_loc',
-            name: 'My Current Location',
-            category: 'landmark',
-            lat: latitude,
-            lng: longitude
-          });
-          setStartQuery('My Current Location');
+          const rev = await reverseGeocodeOneMap(latitude, longitude);
+          if (rev) {
+            setSelectedStart(rev);
+            setStartQuery(rev.name);
+          } else {
+            setSelectedStart({
+              id: 'current_loc',
+              name: 'My Current Location',
+              category: 'landmark',
+              lat: latitude,
+              lng: longitude
+            });
+            setStartQuery('My Current Location');
+          }
         },
         () => {
-          // Fallback to Singapore CBD
-          mapInstanceRef.current?.setView([1.2839, 103.8515], 16);
+          // Fallback to Singapore Novena
+          mapInstanceRef.current?.setView([1.320981, 103.844150], 16);
         }
       );
     } else if (mapInstanceRef.current) {
-      mapInstanceRef.current.setView([1.2839, 103.8515], 16);
+      mapInstanceRef.current.setView([1.320981, 103.844150], 16);
+    }
+  };
+
+  const handleMintToken = async () => {
+    if (!tokenEmail || !tokenPassword) {
+      setTokenStatusMessage('Please enter OneMap email and password.');
+      return;
+    }
+    setTokenStatusMessage('Minting 3-day OneMap token...');
+    const tok = await getOneMapToken(tokenEmail, tokenPassword);
+    if (tok) {
+      setHasActiveToken(true);
+      setTokenStatusMessage('✓ OneMap token minted successfully (valid 3 days)!');
+      setTimeout(() => {
+        setShowTokenModal(false);
+        setTokenStatusMessage(null);
+        calculateRoutes();
+      }, 1200);
+    } else {
+      setTokenStatusMessage('Failed to mint token. Please verify credentials with SLA OneMap.');
+    }
+  };
+
+  const handleSaveManualToken = () => {
+    if (manualTokenInput.trim()) {
+      setManualOneMapToken(manualTokenInput.trim());
+      setHasActiveToken(true);
+      setTokenStatusMessage('✓ Bearer token saved!');
+      setTimeout(() => {
+        setShowTokenModal(false);
+        setTokenStatusMessage(null);
+        calculateRoutes();
+      }, 1000);
     }
   };
 
@@ -451,14 +596,27 @@ export const RoutePlanner: React.FC<RoutePlannerProps> = ({
         >
           <Car className="w-5 h-5" />
         </button>
+
+        {/* OneMap Token Settings */}
+        <button
+          onClick={() => setShowTokenModal(true)}
+          title="OneMap API Token & Auth"
+          className={`w-10 h-10 rounded-full shadow-md flex items-center justify-center transition-all active:scale-90 border ${
+            hasActiveToken
+              ? 'bg-[#003178] text-amber-300 border-[#003178]'
+              : 'bg-white text-gray-600 hover:bg-gray-50 border-gray-200'
+          } cursor-pointer`}
+        >
+          <Key className="w-4 h-4" />
+        </button>
       </div>
 
       {/* 3. Left Planning Sidebar (Desktop) / Bottom Sheet (Mobile) */}
       <aside
-        className={`relative z-10 w-full md:w-[410px] glass-panel md:m-4 md:rounded-2xl flex flex-col shadow-[0_8px_32px_rgba(0,49,120,0.12)] border border-white/60 transition-all duration-300 ${
+        className={`relative z-10 w-full md:w-[420px] glass-panel md:m-4 md:rounded-2xl flex flex-col shadow-[0_8px_32px_rgba(0,49,120,0.12)] border border-white/60 transition-all duration-300 ${
           isMobileExpanded
             ? 'h-[85vh] mt-auto rounded-t-3xl'
-            : 'h-[360px] md:h-[calc(100%-32px)] mt-auto md:mt-0 rounded-t-3xl md:rounded-2xl'
+            : 'h-[380px] md:h-[calc(100%-32px)] mt-auto md:mt-0 rounded-t-3xl md:rounded-2xl'
         }`}
       >
         {/* Mobile Pull Handle */}
@@ -473,19 +631,76 @@ export const RoutePlanner: React.FC<RoutePlannerProps> = ({
         </div>
 
         {/* Scrollable Content Container */}
-        <div className="p-4 sm:p-5 flex flex-col gap-4 overflow-y-auto flex-1">
-          {/* Header Title */}
+        <div className="p-4 sm:p-5 flex flex-col gap-3.5 overflow-y-auto flex-1">
+          {/* Header Title & OneMap Engine Indicator */}
           <div>
             <div className="flex items-center justify-between">
-              <h1 className="text-2xl font-bold text-[#003178] tracking-tight">Plan a walk</h1>
-              <span className="text-xs px-2 py-0.5 rounded-full bg-[#006b5f]/10 text-[#006b5f] font-semibold">
-                Singapore OneMap
-              </span>
+              <h1 className="text-2xl font-bold text-[#003178] tracking-tight">Route Planner</h1>
+              <div className="flex items-center gap-1.5">
+                {isLiveOneMap ? (
+                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-bold flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-pulse"></span>
+                    OneMap Live
+                  </span>
+                ) : (
+                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 font-semibold flex items-center gap-1">
+                    OneMap API Ready
+                  </span>
+                )}
+              </div>
             </div>
-            <p className="text-xs sm:text-sm text-[#434652] mt-0.5">Comfort-first walking · Singapore</p>
+            <p className="text-xs text-[#434652] mt-0.5">Singapore OneMap REST API & Sheltered Path Engine</p>
           </div>
 
-          {/* Start and Destination Input Box */}
+          {/* Mode Selector: Walk | Drive | PT | Cycle */}
+          <div className="grid grid-cols-4 gap-1.5 bg-gray-100/80 p-1 rounded-xl border border-gray-200/60">
+            <button
+              onClick={() => setRouteType('walk')}
+              className={`flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                routeType === 'walk'
+                  ? 'bg-[#003178] text-white shadow-xs'
+                  : 'text-gray-600 hover:text-gray-900 hover:bg-white/50'
+              }`}
+            >
+              <Footprints className="w-3.5 h-3.5" />
+              <span>Walk</span>
+            </button>
+            <button
+              onClick={() => setRouteType('drive')}
+              className={`flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                routeType === 'drive'
+                  ? 'bg-[#003178] text-white shadow-xs'
+                  : 'text-gray-600 hover:text-gray-900 hover:bg-white/50'
+              }`}
+            >
+              <Car className="w-3.5 h-3.5" />
+              <span>Drive</span>
+            </button>
+            <button
+              onClick={() => setRouteType('cycle')}
+              className={`flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                routeType === 'cycle'
+                  ? 'bg-[#003178] text-white shadow-xs'
+                  : 'text-gray-600 hover:text-gray-900 hover:bg-white/50'
+              }`}
+            >
+              <Bike className="w-3.5 h-3.5" />
+              <span>Cycle</span>
+            </button>
+            <button
+              onClick={() => setRouteType('pt')}
+              className={`flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                routeType === 'pt'
+                  ? 'bg-[#003178] text-white shadow-xs'
+                  : 'text-gray-600 hover:text-gray-900 hover:bg-white/50'
+              }`}
+            >
+              <Bus className="w-3.5 h-3.5" />
+              <span>Transit</span>
+            </button>
+          </div>
+
+          {/* Start and Destination Input Box with Live OneMap Search */}
           <div className="flex flex-col gap-2 relative">
             {/* Connecting Vertical Line */}
             <div className="absolute left-4 top-8 bottom-8 w-0.5 bg-[#c3c6d4]/40 z-0"></div>
@@ -504,23 +719,30 @@ export const RoutePlanner: React.FC<RoutePlannerProps> = ({
                     setShowStartSuggestions(true);
                   }}
                   onFocus={() => setShowStartSuggestions(true)}
-                  placeholder="Start location in Singapore..."
-                  className="flex-1 text-sm font-medium text-[#1a1b21] bg-transparent outline-hidden"
+                  placeholder="Search start address / MRT in OneMap..."
+                  className="flex-1 text-xs sm:text-sm font-medium text-[#1a1b21] bg-transparent outline-hidden"
                 />
+                {isSearchingStart && <RefreshCw className="w-3 h-3 text-gray-400 animate-spin mr-1" />}
               </div>
 
               {/* Start Suggestions Dropdown */}
               {showStartSuggestions && (
-                <div className="absolute top-11 left-0 right-0 bg-white rounded-xl shadow-xl border border-gray-200 py-1.5 z-40 max-h-48 overflow-y-auto">
-                  <div className="text-[10px] font-bold text-gray-400 px-3 py-1 uppercase">Landmarks & MRTs</div>
-                  {SINGAPORE_LANDMARKS.filter(l => l.name.toLowerCase().includes(startQuery.toLowerCase())).map(l => (
+                <div className="absolute top-11 left-0 right-0 bg-white rounded-xl shadow-xl border border-gray-200 py-1.5 z-40 max-h-52 overflow-y-auto">
+                  <div className="text-[10px] font-bold text-gray-400 px-3 py-1 uppercase flex justify-between">
+                    <span>OneMap Singapore Results</span>
+                    <span className="text-[#003178]">Live</span>
+                  </div>
+                  {startSuggestions.map(l => (
                     <button
                       key={l.id}
                       onClick={() => handleSelectStart(l)}
-                      className="w-full text-left px-3 py-1.5 hover:bg-[#003178]/5 text-xs text-gray-800 flex items-center justify-between cursor-pointer"
+                      className="w-full text-left px-3 py-1.5 hover:bg-[#003178]/5 text-xs text-gray-800 flex flex-col justify-start cursor-pointer border-b border-gray-50 last:border-0"
                     >
-                      <span className="font-medium">{l.name}</span>
-                      <span className="text-[10px] text-gray-400 uppercase">{l.category}</span>
+                      <div className="flex items-center justify-between w-full">
+                        <span className="font-semibold text-[#003178]">{l.name}</span>
+                        <span className="text-[9px] bg-gray-100 text-gray-600 px-1.5 py-0.2 rounded uppercase">{l.category}</span>
+                      </div>
+                      {l.description && <span className="text-[10px] text-gray-500 truncate w-full">{l.description}</span>}
                     </button>
                   ))}
                 </div>
@@ -552,23 +774,30 @@ export const RoutePlanner: React.FC<RoutePlannerProps> = ({
                     setShowEndSuggestions(true);
                   }}
                   onFocus={() => setShowEndSuggestions(true)}
-                  placeholder="Destination in Singapore..."
-                  className="flex-1 text-sm font-medium text-[#1a1b21] bg-transparent outline-hidden"
+                  placeholder="Search destination in OneMap..."
+                  className="flex-1 text-xs sm:text-sm font-medium text-[#1a1b21] bg-transparent outline-hidden"
                 />
+                {isSearchingEnd && <RefreshCw className="w-3 h-3 text-gray-400 animate-spin mr-1" />}
               </div>
 
               {/* End Suggestions Dropdown */}
               {showEndSuggestions && (
-                <div className="absolute top-11 left-0 right-0 bg-white rounded-xl shadow-xl border border-gray-200 py-1.5 z-40 max-h-48 overflow-y-auto">
-                  <div className="text-[10px] font-bold text-gray-400 px-3 py-1 uppercase">Landmarks & MRTs</div>
-                  {SINGAPORE_LANDMARKS.filter(l => l.name.toLowerCase().includes(endQuery.toLowerCase())).map(l => (
+                <div className="absolute top-11 left-0 right-0 bg-white rounded-xl shadow-xl border border-gray-200 py-1.5 z-40 max-h-52 overflow-y-auto">
+                  <div className="text-[10px] font-bold text-gray-400 px-3 py-1 uppercase flex justify-between">
+                    <span>OneMap Singapore Results</span>
+                    <span className="text-[#006b5f]">Live</span>
+                  </div>
+                  {endSuggestions.map(l => (
                     <button
                       key={l.id}
                       onClick={() => handleSelectEnd(l)}
-                      className="w-full text-left px-3 py-1.5 hover:bg-[#003178]/5 text-xs text-gray-800 flex items-center justify-between cursor-pointer"
+                      className="w-full text-left px-3 py-1.5 hover:bg-[#006b5f]/5 text-xs text-gray-800 flex flex-col justify-start cursor-pointer border-b border-gray-50 last:border-0"
                     >
-                      <span className="font-medium">{l.name}</span>
-                      <span className="text-[10px] text-gray-400 uppercase">{l.category}</span>
+                      <div className="flex items-center justify-between w-full">
+                        <span className="font-semibold text-[#006b5f]">{l.name}</span>
+                        <span className="text-[9px] bg-gray-100 text-gray-600 px-1.5 py-0.2 rounded uppercase">{l.category}</span>
+                      </div>
+                      {l.description && <span className="text-[10px] text-gray-500 truncate w-full">{l.description}</span>}
                     </button>
                   ))}
                 </div>
@@ -578,38 +807,38 @@ export const RoutePlanner: React.FC<RoutePlannerProps> = ({
 
           {/* Quick Preset Pills */}
           <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-xs">
-            <span className="text-gray-400 text-[11px] font-medium shrink-0">Presets:</span>
-            <button
-              onClick={() => {
-                handleSelectStart(SINGAPORE_LANDMARKS[0]);
-                handleSelectEnd(SINGAPORE_LANDMARKS[1]);
-              }}
-              className="px-2.5 py-1 rounded-lg bg-white/80 hover:bg-white text-[#003178] border border-gray-200 shrink-0 font-medium cursor-pointer"
-            >
-              Raffles ➔ MBS
-            </button>
+            <span className="text-gray-400 text-[10px] font-medium shrink-0 uppercase">Presets:</span>
             <button
               onClick={() => {
                 handleSelectStart(SINGAPORE_LANDMARKS[3]);
                 handleSelectEnd(SINGAPORE_LANDMARKS[4]);
               }}
-              className="px-2.5 py-1 rounded-lg bg-white/80 hover:bg-white text-[#003178] border border-gray-200 shrink-0 font-medium cursor-pointer"
+              className="px-2.5 py-1 rounded-lg bg-white/80 hover:bg-white text-[#003178] border border-gray-200 shrink-0 font-medium cursor-pointer text-xs"
             >
-              Novena ➔ Toa Payoh
+              Novena ➔ Toa Payoh (Default)
+            </button>
+            <button
+              onClick={() => {
+                handleSelectStart(SINGAPORE_LANDMARKS[0]);
+                handleSelectEnd(SINGAPORE_LANDMARKS[1]);
+              }}
+              className="px-2.5 py-1 rounded-lg bg-white/80 hover:bg-white text-[#003178] border border-gray-200 shrink-0 font-medium cursor-pointer text-xs"
+            >
+              Raffles ➔ MBS
             </button>
             <button
               onClick={() => {
                 handleSelectStart(SINGAPORE_LANDMARKS[6]);
                 handleSelectEnd(SINGAPORE_LANDMARKS[5]);
               }}
-              className="px-2.5 py-1 rounded-lg bg-white/80 hover:bg-white text-[#003178] border border-gray-200 shrink-0 font-medium cursor-pointer"
+              className="px-2.5 py-1 rounded-lg bg-white/80 hover:bg-white text-[#003178] border border-gray-200 shrink-0 font-medium cursor-pointer text-xs"
             >
               City Hall ➔ Suntec
             </button>
           </div>
 
           {/* Controls: Weather Sun Shade Toggle & Depart Time Selector */}
-          <div className="flex flex-col gap-2.5 bg-white/70 p-3.5 rounded-xl border border-[#c3c6d4]/40 shadow-xs">
+          <div className="flex flex-col gap-2.5 bg-white/70 p-3 rounded-xl border border-[#c3c6d4]/40 shadow-xs">
             {/* Sun Shade Mode Toggle */}
             <div className="flex justify-between items-center">
               <div className="flex items-center gap-2">
@@ -653,27 +882,34 @@ export const RoutePlanner: React.FC<RoutePlannerProps> = ({
 
           {/* Primary Action Button */}
           <button
-            onClick={() => {
-              // trigger refresh route view
-              setShowSteps(false);
-            }}
-            className="w-full bg-[#003178] hover:bg-[#002254] text-white font-semibold py-3 px-4 rounded-xl shadow-md transition-all active:scale-[0.98] flex items-center justify-center gap-2 text-sm cursor-pointer"
+            onClick={calculateRoutes}
+            disabled={isCalculating}
+            className="w-full bg-[#003178] hover:bg-[#002254] text-white font-semibold py-2.5 px-4 rounded-xl shadow-md transition-all active:scale-[0.98] flex items-center justify-center gap-2 text-sm cursor-pointer disabled:opacity-75"
           >
-            <Footprints className="w-4 h-4" />
-            Find walking route
+            {isCalculating ? (
+              <>
+                <RefreshCw className="w-4 h-4 animate-spin" />
+                <span>Computing OneMap Route...</span>
+              </>
+            ) : (
+              <>
+                <Navigation className="w-4 h-4" />
+                <span>Calculate OneMap Route</span>
+              </>
+            )}
           </button>
 
           {/* Divider */}
-          <div className="h-px w-full bg-[#c3c6d4]/30 my-1"></div>
+          <div className="h-px w-full bg-[#c3c6d4]/30 my-0.5"></div>
 
           {/* Route Options List */}
           <div>
-            <div className="flex items-center justify-between mb-2.5">
-              <h2 className="text-base font-bold text-[#1a1b21]">Route options</h2>
-              <span className="text-[11px] text-gray-500 font-medium">Ranked by comfort</span>
+            <div className="flex items-center justify-between mb-2">
+              <h2 className="text-sm font-bold text-[#1a1b21]">Route options</h2>
+              <span className="text-[11px] text-gray-500 font-medium">Ranked by comfort & shelter</span>
             </div>
 
-            <div className="flex flex-col gap-2.5">
+            <div className="flex flex-col gap-2">
               {routes.map(route => {
                 const isSelected = route.id === selectedRouteId;
                 const weatherStripClass =
@@ -687,7 +923,7 @@ export const RoutePlanner: React.FC<RoutePlannerProps> = ({
                   <div
                     key={route.id}
                     onClick={() => setSelectedRouteId(route.id)}
-                    className={`bg-white rounded-xl p-3.5 transition-all cursor-pointer relative overflow-hidden border ${weatherStripClass} ${
+                    className={`bg-white rounded-xl p-3 transition-all cursor-pointer relative overflow-hidden border ${weatherStripClass} ${
                       isSelected
                         ? 'active-card-shadow border-[#003178]/30 ring-1 ring-[#003178]/30'
                         : 'border-[#c3c6d4]/40 hover:bg-gray-50/80 opacity-90'
@@ -701,23 +937,23 @@ export const RoutePlanner: React.FC<RoutePlannerProps> = ({
                     )}
 
                     {/* Title & ETA */}
-                    <div className="flex justify-between items-start mb-1.5 mt-0.5">
+                    <div className="flex justify-between items-start mb-1 mt-0.5">
                       <div>
-                        <h3 className="text-sm font-bold text-[#003178] flex items-center gap-1">
+                        <h3 className="text-xs sm:text-sm font-bold text-[#003178] flex items-center gap-1">
                           {route.name}
                           {route.isKomfyPick && <CheckCircle2 className="w-3.5 h-3.5 text-[#003178]" />}
                         </h3>
-                        <p className="text-xs text-[#434652]">{route.subtitle}</p>
+                        <p className="text-[11px] text-[#434652] truncate max-w-[200px]">{route.subtitle}</p>
                       </div>
                       <div className="text-right">
-                        <span className="text-base font-bold text-[#1a1b21] block leading-tight">{route.durationMins} min</span>
-                        <span className="text-[11px] text-gray-500">{route.distanceKm} km</span>
+                        <span className="text-sm font-bold text-[#1a1b21] block leading-tight">{route.durationMins} min</span>
+                        <span className="text-[10px] text-gray-500">{route.distanceKm} km</span>
                       </div>
                     </div>
 
                     {/* Sheltered Progress Meter */}
-                    <div className="flex items-center gap-2.5 mt-2">
-                      <div className="flex-1 bg-gray-100 rounded-full h-2 overflow-hidden flex">
+                    <div className="flex items-center gap-2 mt-1.5">
+                      <div className="flex-1 bg-gray-100 rounded-full h-1.5 overflow-hidden flex">
                         <div
                           className={`h-full ${
                             route.weatherStripType === 'dry'
@@ -730,7 +966,7 @@ export const RoutePlanner: React.FC<RoutePlannerProps> = ({
                         ></div>
                       </div>
                       <span
-                        className={`text-xs font-bold ${
+                        className={`text-[11px] font-bold ${
                           route.weatherStripType === 'dry'
                             ? 'text-[#43A047]'
                             : route.weatherStripType === 'balanced'
@@ -743,11 +979,11 @@ export const RoutePlanner: React.FC<RoutePlannerProps> = ({
                     </div>
 
                     {/* Tags */}
-                    <div className="flex flex-wrap gap-1.5 mt-2.5">
+                    <div className="flex flex-wrap gap-1 mt-2">
                       {route.tags.map((tag, idx) => (
                         <span
                           key={idx}
-                          className="bg-[#E3F2FD] text-[#003178] px-2 py-0.5 rounded text-[10px] font-semibold flex items-center gap-1"
+                          className="bg-[#E3F2FD] text-[#003178] px-1.5 py-0.5 rounded text-[9px] font-semibold flex items-center gap-1"
                         >
                           <Shield className="w-2.5 h-2.5" />
                           {tag.label}
@@ -767,15 +1003,15 @@ export const RoutePlanner: React.FC<RoutePlannerProps> = ({
                 onClick={() => setShowSteps(!showSteps)}
                 className="w-full flex items-center justify-between text-xs font-bold text-[#003178] cursor-pointer"
               >
-                <span>Step-by-step sheltered directions ({activeRoute.segments?.length || 0} legs)</span>
+                <span>Step-by-step OneMap directions ({activeRoute.segments?.length || 0} legs)</span>
                 {showSteps ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
               </button>
 
               {showSteps && activeRoute.segments && (
-                <div className="mt-3 space-y-2.5 pt-2 border-t border-gray-100 text-xs text-[#434652]">
+                <div className="mt-3 space-y-2 pt-2 border-t border-gray-100 text-xs text-[#434652]">
                   {activeRoute.segments.map((seg, idx) => (
                     <div key={idx} className="flex gap-2 items-start">
-                      <span className="w-5 h-5 rounded-full bg-[#003178]/10 text-[#003178] font-bold flex items-center justify-center shrink-0 text-[10px]">
+                      <span className="w-4 h-4 rounded-full bg-[#003178]/10 text-[#003178] font-bold flex items-center justify-center shrink-0 text-[9px]">
                         {idx + 1}
                       </span>
                       <div className="flex-1">
@@ -785,7 +1021,7 @@ export const RoutePlanner: React.FC<RoutePlannerProps> = ({
                             {seg.shelterName || seg.type}
                           </span>
                           <span>•</span>
-                          <span>{seg.distanceMeters}m ({seg.durationMins}m)</span>
+                          <span>{seg.distanceMeters}m ({seg.durationMins} min)</span>
                         </div>
                       </div>
                     </div>
@@ -796,6 +1032,97 @@ export const RoutePlanner: React.FC<RoutePlannerProps> = ({
           )}
         </div>
       </aside>
+
+      {/* OneMap Token & API Credentials Modal */}
+      {showTokenModal && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl p-6 max-w-md w-full shadow-2xl border border-gray-100 animate-in fade-in zoom-in-95">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <Key className="w-5 h-5 text-[#003178]" />
+                <h3 className="font-bold text-lg text-[#003178]">OneMap API Setup</h3>
+              </div>
+              <button
+                onClick={() => setShowTokenModal(false)}
+                className="text-gray-400 hover:text-gray-600 font-bold text-lg cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <p className="text-xs text-gray-600 mb-4 leading-relaxed">
+              Official OneMap REST API endpoints embedded:
+              <br />
+              • <strong>Mint Token:</strong> <code className="text-[10px] bg-gray-100 px-1 py-0.5 rounded">/api/auth/post/getToken</code> (valid 3 days)
+              <br />
+              • <strong>Search/Geocode:</strong> <code className="text-[10px] bg-gray-100 px-1 py-0.5 rounded">/api/common/elastic/search</code>
+              <br />
+              • <strong>Reverse Geocode:</strong> <code className="text-[10px] bg-gray-100 px-1 py-0.5 rounded">/api/public/revgeocode</code>
+              <br />
+              • <strong>Routing (walk/drive/pt/cycle):</strong> <code className="text-[10px] bg-gray-100 px-1 py-0.5 rounded">/api/public/routingsvc/route</code>
+            </p>
+
+            {tokenStatusMessage && (
+              <div className="mb-4 p-2.5 rounded-lg bg-blue-50 text-blue-900 text-xs font-semibold border border-blue-200">
+                {tokenStatusMessage}
+              </div>
+            )}
+
+            <div className="space-y-3">
+              <div className="border border-gray-200 rounded-xl p-3 bg-gray-50">
+                <div className="text-xs font-bold text-[#003178] mb-2">Option A: Mint 3-day Token (POST /getToken)</div>
+                <input
+                  type="email"
+                  placeholder="OneMap Registered Email"
+                  value={tokenEmail}
+                  onChange={e => setTokenEmail(e.target.value)}
+                  className="w-full text-xs p-2 rounded-lg border border-gray-300 mb-2 bg-white"
+                />
+                <input
+                  type="password"
+                  placeholder="OneMap Password"
+                  value={tokenPassword}
+                  onChange={e => setTokenPassword(e.target.value)}
+                  className="w-full text-xs p-2 rounded-lg border border-gray-300 mb-2 bg-white"
+                />
+                <button
+                  onClick={handleMintToken}
+                  className="w-full bg-[#003178] hover:bg-[#002254] text-white text-xs font-semibold py-2 rounded-lg cursor-pointer"
+                >
+                  Mint New 3-Day Token
+                </button>
+              </div>
+
+              <div className="border border-gray-200 rounded-xl p-3 bg-gray-50">
+                <div className="text-xs font-bold text-[#003178] mb-2">Option B: Enter Existing Token Directly</div>
+                <input
+                  type="text"
+                  placeholder="Paste Bearer Access Token..."
+                  value={manualTokenInput}
+                  onChange={e => setManualTokenInput(e.target.value)}
+                  className="w-full text-xs p-2 rounded-lg border border-gray-300 mb-2 bg-white"
+                />
+                <button
+                  onClick={handleSaveManualToken}
+                  className="w-full bg-[#006b5f] hover:bg-[#005249] text-white text-xs font-semibold py-2 rounded-lg cursor-pointer"
+                >
+                  Save Token to Local Storage
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-4 pt-3 border-t border-gray-100 flex justify-between items-center text-[11px] text-gray-500">
+              <span>Auto-caches token for 72 hours</span>
+              <button
+                onClick={() => setShowTokenModal(false)}
+                className="text-[#003178] font-bold hover:underline cursor-pointer"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
